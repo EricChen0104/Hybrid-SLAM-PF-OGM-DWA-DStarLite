@@ -35,11 +35,11 @@ max_accel = 100.0
 max_omega_accel = 100.0 * math.pi / 180.0
 v_resolution = 4.0
 max_speed = 300.0 
-min_speed = -0.5
+min_speed = 0.0  # MODIFIED: Changed from -0.5 to 0.0 to simplify and prevent backward movement.
+to_goal_cost_gain = 0.15  # MODIFIED: Increased significantly to prioritize reaching the goal.
 omega_resolution = 1.5 * math.pi / 180.0
-to_goal_cost_gain = 0.01 
 max_omega = 140.0 * math.pi / 180.0
-speed_cost_gain = 0.4
+speed_cost_gain = 0.1 # MODIFIED: Reduced to lessen the penalty for slow speeds, allowing turns.
 obstacle_cost_gain = 50.0
 path_cost_gain = 1.5
 predict_time = 3.0
@@ -165,7 +165,7 @@ def on_click(event):
 
     if event.button == 1: 
         mx, my = world_to_map(x, y)
-        if last_inflated_map is not None and last_inflated_map[mx, my]:
+        if last_inflated_map is not None and last_inflated_map[my, mx]:
             print("Cannot set goal on an obstacle!")
             return
         
@@ -579,7 +579,12 @@ def dwa_control(state, goal, obstacles, global_path, ax):
     best_u = [0.0, 0.0]
     best_trajectory = np.array([[state.x, state.y]])
 
-    for v in np.arange(dw["v_min"], dw["v_max"], v_resolution):
+    # MODIFICATION: Create a set of candidate velocities, ensuring 0 is included for turn-in-place
+    # (為了支援原地旋轉，我們需要確保速度為0是一個可選項。)
+    v_samples = set(np.arange(dw["v_min"], dw["v_max"], v_resolution))
+    v_samples.add(0.0)
+
+    for v in v_samples:
         for omega in np.arange(dw["omega_min"], dw["omega_max"], omega_resolution):
             trajectory = predict_trajectory(state, v, omega)
             to_goal_cost = to_goal_cost_gain * calc_to_goal_cost_optimized(trajectory, goal)
@@ -629,45 +634,42 @@ def calc_obstacle_cost(trajectory, obstacles):
 
     return 1.0 / min_dist
 
-def calc_to_goal_cost_optimized(trajectory, goal, goal_tolerance=0.1, orientation_weight=0.3):
-    final_pos = trajectory[-1, 0:2] 
-    
+def calc_to_goal_cost_optimized(trajectory, goal):
+    """
+    Calculates the cost to reach the goal, combining heading and distance.
+    This version is corrected to properly weigh orientation, which enables
+    the robot to decide to turn in place if it's not facing the goal.
+    (此函式經過修正，可以正確評估朝向目標的成本，使機器人能夠在方向錯誤時決定原地旋轉)
+    """
+    # --- Parameters to balance costs ---
+    # Weight for aligning with the goal direction. Higher value promotes turning.
+    HEADING_WEIGHT = 6.0 
+    # Weight for distance to the goal.
+    DISTANCE_WEIGHT = 1.0
+
+    # Extract final state from the predicted trajectory
+    final_pos = trajectory[-1, 0:2]
+    final_theta = trajectory[-1, 2]
+
+    # --- Calculate Distance Cost ---
     dist_to_goal = math.hypot(goal[0] - final_pos[0], goal[1] - final_pos[1])
+    distance_cost = DISTANCE_WEIGHT * dist_to_goal
+
+    # --- Calculate Heading Cost ---
+    # Angle from the robot's final position to the goal
+    angle_to_goal = math.atan2(goal[1] - final_pos[1], goal[0] - final_pos[0])
     
-    if dist_to_goal < goal_tolerance:
-        distance_cost = 0.0  
-    else:
-        distance_cost = dist_to_goal ** 2
+    # Difference between the robot's orientation and the direction to the goal
+    angle_diff = final_theta - angle_to_goal
     
-    orientation_cost = 0.0
-    if len(goal) >= 3 and trajectory.shape[1] >= 3:
-        final_theta = trajectory[-1, 2]
-        goal_theta = goal[2]
-        
-        angle_diff = abs(goal_theta - final_theta)
-        angle_diff = min(angle_diff, 2 * math.pi - angle_diff)
-        
-        orientation_cost = angle_diff * orientation_weight
+    # Normalize the angle to be within [-pi, pi]
+    angle_diff = (angle_diff + math.pi) % (2 * math.pi) - math.pi
     
-    smoothness_bonus = 0.0
-    if len(trajectory) > 1:
-        curvature_changes = []
-        for i in range(1, len(trajectory) - 1):
-            p1, p2, p3 = trajectory[i-1:i+2, 0:2]
-            
-            # 避免除零
-            if not (np.allclose(p1, p2) or np.allclose(p2, p3)):
-                v1 = p2 - p1
-                v2 = p3 - p2
-                cross_product = np.cross(v1, v2)
-                curvature = abs(cross_product) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-6)
-                curvature_changes.append(curvature)
-        
-        if curvature_changes:
-            avg_curvature = np.mean(curvature_changes)
-            smoothness_bonus = -0.1 * avg_curvature 
-    
-    return distance_cost + orientation_cost + smoothness_bonus
+    heading_cost = HEADING_WEIGHT * abs(angle_diff)
+
+    # The total cost is a weighted sum of the two components.
+    # This will be multiplied by the global `to_goal_cost_gain` later.
+    return distance_cost + heading_cost
 
 def find_closest_path_segment(global_path, point):
     min_dist_sq = float('inf')
