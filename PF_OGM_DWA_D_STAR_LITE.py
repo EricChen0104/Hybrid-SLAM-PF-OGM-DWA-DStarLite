@@ -579,8 +579,6 @@ def dwa_control(state, goal, obstacles, global_path, ax):
     best_u = [0.0, 0.0]
     best_trajectory = np.array([[state.x, state.y]])
 
-    # MODIFICATION: Create a set of candidate velocities, ensuring 0 is included for turn-in-place
-    # (為了支援原地旋轉，我們需要確保速度為0是一個可選項。)
     v_samples = set(np.arange(dw["v_min"], dw["v_max"], v_resolution))
     v_samples.add(0.0)
 
@@ -635,40 +633,23 @@ def calc_obstacle_cost(trajectory, obstacles):
     return 1.0 / min_dist
 
 def calc_to_goal_cost_optimized(trajectory, goal):
-    """
-    Calculates the cost to reach the goal, combining heading and distance.
-    This version is corrected to properly weigh orientation, which enables
-    the robot to decide to turn in place if it's not facing the goal.
-    (此函式經過修正，可以正確評估朝向目標的成本，使機器人能夠在方向錯誤時決定原地旋轉)
-    """
-    # --- Parameters to balance costs ---
-    # Weight for aligning with the goal direction. Higher value promotes turning.
     HEADING_WEIGHT = 6.0 
-    # Weight for distance to the goal.
     DISTANCE_WEIGHT = 1.0
 
-    # Extract final state from the predicted trajectory
     final_pos = trajectory[-1, 0:2]
     final_theta = trajectory[-1, 2]
 
-    # --- Calculate Distance Cost ---
     dist_to_goal = math.hypot(goal[0] - final_pos[0], goal[1] - final_pos[1])
     distance_cost = DISTANCE_WEIGHT * dist_to_goal
 
-    # --- Calculate Heading Cost ---
-    # Angle from the robot's final position to the goal
     angle_to_goal = math.atan2(goal[1] - final_pos[1], goal[0] - final_pos[0])
     
-    # Difference between the robot's orientation and the direction to the goal
     angle_diff = final_theta - angle_to_goal
     
-    # Normalize the angle to be within [-pi, pi]
     angle_diff = (angle_diff + math.pi) % (2 * math.pi) - math.pi
     
     heading_cost = HEADING_WEIGHT * abs(angle_diff)
 
-    # The total cost is a weighted sum of the two components.
-    # This will be multiplied by the global `to_goal_cost_gain` later.
     return distance_cost + heading_cost
 
 def find_closest_path_segment(global_path, point):
